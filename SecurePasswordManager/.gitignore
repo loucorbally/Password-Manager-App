@@ -1,0 +1,6 @@
+passwordData.db
+*.db
+__pycache__/
+.idea/
+.venv/
+.env
