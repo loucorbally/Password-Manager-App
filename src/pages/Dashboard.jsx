@@ -11,14 +11,19 @@ const SAMPLE_ENTRIES = [
 ]
 
 // password categories
-const CATEGORIES = ['All', 'Personal', 'Work', 'Dev']
+const CATEGORIES = ['All', 'Personal', 'Work', 'Dev', 'Uni']
 
 
 export default function Dashboard({ user, onLogout }) {
+  // stores all passwords entries
   const [entries, setEntries] = useState(SAMPLE_ENTRIES)
+  // stores search text
   const [search, setSearch] = useState('')
+  // stores selected filter category
   const [category, setCategory] = useState('All')
+  // controls modal visability 
   const [modalOpen, setModalOpen] = useState(false)
+  // stores currently selected entry
   const [editEntry, setEditEntry] = useState(null)
 
   // filter categories
