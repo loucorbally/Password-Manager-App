@@ -1,4 +1,5 @@
-from flask import Flask, render_template, request, url_for, flash
+from flask import Flask, render_template, request, url_for, flash, jsonify
+from flask_cors import CORS
 from werkzeug.utils import redirect
 import sqlite3
 import os
@@ -23,6 +24,12 @@ db_file = "passwordData.db"
 
 app = Flask(__name__)
 app.secret_key = "change_this_to_a_random_secret"  # needed for flash/sessions
+
+CORS(
+    app,
+    supports_credentials=True,
+    resources={r"/api/*": {"origins": ["http://localhost:5173", "http://localhost:3000"]}},
+)
 
 bcrypt = Bcrypt(app)
 
@@ -146,11 +153,80 @@ def is_strong_password(pw: str) -> bool:
 # -----------------------
 # Routes
 # -----------------------
-@app.route("/")
-def home():
-    if current_user.is_authenticated:
-        return redirect(url_for("vault"))
-    return redirect(url_for("login"))
+@app.route("/api/health")
+def api_health():
+    return jsonify({"ok": True})
+
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    data = request.get_json(force=True) or {}
+    username = (data.get("email") or data.get("username") or "").strip()
+    master_password = data.get("password") or ""
+    confirm = data.get("confirm") or master_password
+
+    if not username:
+        return jsonify({"error": "Username/email is required."}), 400
+    if master_password != confirm:
+        return jsonify({"error": "Passwords do not match."}), 400
+    if not is_strong_password(master_password):
+        return jsonify({"error": "Password must be 12+ chars and include upper/lower/digit/symbol."}), 400
+
+    password_hash = bcrypt.generate_password_hash(master_password).decode("utf-8")
+    kdf_salt = os.urandom(16)
+    kek = derive_kek(master_password, kdf_salt)
+    vault_key = generate_vault_key()
+    encrypted_vault_key = encrypt_with_aesgcm(kek, vault_key)
+
+    conn = get_db()
+    try:
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash, kdf_salt, encrypted_vault_key) VALUES (?, ?, ?, ?)",
+                (username, password_hash, kdf_salt, encrypted_vault_key),
+            )
+            conn.commit()
+            user_id = cur.lastrowid
+        except sqlite3.IntegrityError:
+            return jsonify({"error": "That username is already taken."}), 409
+    finally:
+        conn.close()
+
+    # Optional: log them in immediately after registering
+    login_user(User(user_id, username))
+    return jsonify({"ok": True, "user": {"email": username}}), 201
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    data = request.get_json(force=True) or {}
+    username = (data.get("email") or data.get("username") or "").strip()
+    master_password = data.get("password") or ""
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id, username, password_hash FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if not row or not bcrypt.check_password_hash(row["password_hash"], master_password):
+        return jsonify({"error": "Invalid username or password."}), 401
+
+    login_user(User(row["id"], row["username"]))
+    return jsonify({"ok": True, "user": {"email": row["username"]}})
+
+@app.route("/api/logout", methods=["POST"])
+@login_required
+def api_logout():
+    logout_user()
+    return jsonify({"ok": True})
+
+@app.route("/api/me", methods=["GET"])
+def api_me():
+    if not current_user.is_authenticated:
+        return jsonify({"user": None}), 200
+    return jsonify({"user": {"email": current_user.username}}), 200
 
 def get_user_vault_key(user_id: str, master_password: str) -> bytes:
     """
@@ -176,98 +252,9 @@ def get_user_vault_key(user_id: str, master_password: str) -> bytes:
     finally:
         conn.close()
 
-@app.route("/register", methods=["GET", "POST"])
-def register():
-    if current_user.is_authenticated:
-        return redirect(url_for("vault"))
-
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        master_password = request.form.get("master_password") or ""
-        confirm_password = request.form.get("confirm_password") or ""
-
-        if not username:
-            flash("Username is required.", "error")
-            return redirect(url_for("register"))
-
-        if master_password != confirm_password:
-            flash("Passwords do not match.", "error")
-            return redirect(url_for("register"))
-
-        if not is_strong_password(master_password):
-            flash("Password must be 12+ chars and include upper/lower/digit/symbol.", "error")
-            return redirect(url_for("register"))
-
-        password_hash = bcrypt.generate_password_hash(master_password).decode("utf-8")
-
-        kdf_salt = os.urandom(16)
-        kek = derive_kek(master_password, kdf_salt)
-
-        vault_key = generate_vault_key()
-        encrypted_vault_key = encrypt_with_aesgcm(kek, vault_key)
-
-        conn = get_db()
-        try:
-            try:
-                conn.execute(
-                    "INSERT INTO users (username, password_hash, kdf_salt, encrypted_vault_key) VALUES (?, ?, ?, ?)",
-                    (username, password_hash, kdf_salt, encrypted_vault_key),
-                )
-                conn.commit()
-            except sqlite3.IntegrityError:
-                flash("That username is already taken.", "error")
-                return redirect(url_for("register"))
-        finally:
-            conn.close()
-
-        flash("Account created. Please log in.", "success")
-        return redirect(url_for("login"))
-
-    return render_template("register.html")
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if current_user.is_authenticated:
-        return redirect(url_for("vault"))
-
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        master_password = request.form.get("master_password") or ""
-
-        conn = get_db()
-        try:
-            row = conn.execute(
-                "SELECT id, username, password_hash FROM users WHERE username = ?",
-                (username,),
-            ).fetchone()
-        finally:
-            conn.close()
-
-        if not row:
-            flash("Invalid username or password.", "error")
-            return redirect(url_for("login"))
-
-        if not bcrypt.check_password_hash(row["password_hash"], master_password):
-            flash("Invalid username or password.", "error")
-            return redirect(url_for("login"))
-
-        user = User(row["id"], row["username"])
-        login_user(user)
-        flash("Logged in successfully.", "success")
-        return redirect(url_for("vault"))
-
-    return render_template("login.html")
-
-@app.route("/logout", methods=["POST"])
+@app.route("/api/credentials", methods=["GET"])
 @login_required
-def logout():
-    logout_user()
-    flash("You have been logged out.", "success")
-    return redirect(url_for("login"))
-
-@app.route("/vault")
-@login_required
-def vault():
+def api_list_credentials():
     conn = get_db()
     try:
         rows = conn.execute(
@@ -278,49 +265,45 @@ def vault():
     finally:
         conn.close()
 
-    return render_template("vault.html", username=current_user.username, creds=creds)
+    return jsonify({"items": creds})
 
-@app.route("/credentials/new", methods=["GET", "POST"])
+@app.route("/api/credentials", methods=["POST"])
 @login_required
-def new_credential():
-    if request.method == "POST":
-        service = (request.form.get("service") or "").strip()
-        login_ = (request.form.get("login") or "").strip()
-        password = request.form.get("password") or ""
-        master_password = request.form.get("master_password") or ""
+def api_create_credential():
+    data = request.get_json(force=True) or {}
+    service = (data.get("site") or data.get("service") or "").strip()
+    login_ = (data.get("username") or data.get("login") or "").strip()
+    password = data.get("password") or ""
+    master_password = data.get("master_password") or ""
 
-        if not service or not login_ or not password:
-            flash("Service, login, and password are required.", "error")
-            return redirect(url_for("new_credential"))
+    if not service or not login_ or not password:
+        return jsonify({"error": "service/site, login/username, and password are required."}), 400
 
-        try:
-            vault_key = get_user_vault_key(current_user.id, master_password)
-        except ValueError:
-            flash("Master password is incorrect.", "error")
-            return redirect(url_for("new_credential"))
+    try:
+        vault_key = get_user_vault_key(current_user.id, master_password)
+    except ValueError:
+        return jsonify({"error": "Master password is incorrect."}), 401
 
-        aesgcm = AESGCM(vault_key)
-        nonce = os.urandom(12)
-        ciphertext = aesgcm.encrypt(nonce, password.encode("utf-8"), None)
+    aesgcm = AESGCM(vault_key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, password.encode("utf-8"), None)
 
-        conn = get_db()
-        try:
-            conn.execute(
-                """
-                INSERT INTO credentials (user_id, service, login, password_ciphertext, password_nonce)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (current_user.id, service, login_, ciphertext, nonce),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    conn = get_db()
+    try:
+        cur = conn.execute(
+            """
+            INSERT INTO credentials (user_id, service, login, password_ciphertext, password_nonce)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (current_user.id, service, login_, ciphertext, nonce),
+        )
+        conn.commit()
+        new_id = cur.lastrowid
+    finally:
+        conn.close()
 
-        flash("Credential added.", "success")
-        return redirect(url_for("vault"))
-
-    return render_template("credential_new.html")
+    return jsonify({"ok": True, "id": new_id}), 201
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=True)
