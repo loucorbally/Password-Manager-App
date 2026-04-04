@@ -3,14 +3,25 @@ import AuthPage from './pages/AuthPage'
 import Dashboard from './pages/Dashboard'
 
 export default function App() {
-  // stores the currently logged in user
-  // null means no user is logged in
   const [user, setUser] = useState(null)
 
-  //if no user is logged in, dislay the login / register page
-  if (!user) return <AuthPage onAuth={setUser} />
+  const handleAuth = (userFromBackend) => {
+    setUser(userFromBackend) // expects { email: ... }
+  }
 
-  //if user is logged in, display the dashboard
-  return <Dashboard user={user} onLogout={() => setUser(null)} />
+  const handleLogout = async () => {
+    try {
+      await fetch('http://127.0.0.1:5000/api/logout', {
+        method: 'POST',
+        credentials: 'include',
+      })
+    } catch {
+      // ignore network errors
+    }
+    setUser(null)
+  }
+
+  if (!user) return <AuthPage onAuth={handleAuth} />
+
+  return <Dashboard user={user} onLogout={handleLogout} />
 }
-
