@@ -1,7 +1,7 @@
 import { useState } from 'react'
 
 export default function AuthPage({ onAuth }) {
-  const [mode, setMode] = useState('login') // 'login' | 'register'
+  const [mode, setMode] = useState('login')
   const [form, setForm] = useState({ email: '', password: '', confirm: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -11,28 +11,62 @@ export default function AuthPage({ onAuth }) {
     setError('')
   }
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError('')
-
-    if (mode === 'register' && form.password !== form.confirm) {
-      setError('Passwords do not match.')
-      return
-    }
-    if (form.password.length < 8) {
-      setError('Password must be at least 8 characters.')
-      return
-    }
-
-    setLoading(true)
-    // Simulate API call — replace with real fetch to your Python backend
-    await new Promise((r) => setTimeout(r, 900))
-    setLoading(false)
-
-    // TODO: replace with real API call
-    // const res = await fetch('/api/auth/login', { method: 'POST', body: JSON.stringify(form) })
-    onAuth({ email: form.email })
+  const isStrongPassword = (pw) => {
+    if (!pw || pw.length < 12) return false
+    const hasLower = /[a-z]/.test(pw)
+    const hasUpper = /[A-Z]/.test(pw)
+    const hasDigit = /\d/.test(pw)
+    const hasSymbol = /[^A-Za-z0-9]/.test(pw)
+    return hasLower && hasUpper && hasDigit && hasSymbol
   }
+
+  const handleSubmit = async (e) => {
+  e.preventDefault()
+  setError('')
+
+  if (mode === 'register' && form.password !== form.confirm) {
+    setError('Passwords do not match.')
+    return
+  }
+
+  // match backend rules (12+ upper/lower/digit/symbol)
+  if (!isStrongPassword(form.password)) {
+    setError('Password must be 12+ chars and include upper/lower/digit/symbol.')
+    return
+  }
+
+  setLoading(true)
+  try {
+    const endpoint =
+      mode === 'login'
+        ? 'http://127.0.0.1:5000/api/login'
+        : 'http://127.0.0.1:5000/api/register'
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', // keep flask-login cookie session
+      body: JSON.stringify({
+        email: form.email,
+        password: form.password,
+        confirm: form.confirm,
+      }),
+    })
+
+    const data = await res.json().catch(() => ({}))
+
+    if (!res.ok) {
+      setError(data?.error || 'Authentication failed.')
+      return
+    }
+
+    onAuth(data.user) // { email: ... }
+  } catch (err) {
+    setError('Network error. Is the backend running on port 5000?')
+  } finally {
+    setLoading(false)
+  }
+}
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center px-4">
