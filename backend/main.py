@@ -25,17 +25,27 @@ db_file = "passwordData.db"
 app = Flask(__name__)
 app.secret_key = "change_this_to_a_random_secret"  # needed for flash/sessions
 
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=False,  # dev (HTTP)
+)
+
 CORS(
     app,
     supports_credentials=True,
-    resources={r"/api/*": {"origins": ["http://localhost:5173", "http://localhost:3000"]}},
+    origins=["http://127.0.0.1:5173"],
 )
 
 bcrypt = Bcrypt(app)
 
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = "login"  # endpoint name (function name)
+login_manager.login_view = "api_login"  # endpoint name (function name)
+
+@login_manager.unauthorized_handler
+def unauthorized():
+    return jsonify({"error": "Unauthorized"}), 401
 
 def get_db():
     conn = sqlite3.connect(db_file)
