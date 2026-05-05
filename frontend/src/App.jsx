@@ -4,9 +4,11 @@ import Dashboard from './pages/Dashboard'
 
 export default function App() {
   const [user, setUser] = useState(null)
+  const [masterPassword, setMasterPassword] = useState(null)
 
-  const handleAuth = (userFromBackend) => {
-    setUser(userFromBackend) // expects { email: ... }
+  const handleAuth = (userFromBackend, password) => {
+    setUser(userFromBackend)
+    setMasterPassword(password)
   }
 
   const handleLogout = async () => {
@@ -16,12 +18,13 @@ export default function App() {
         credentials: 'include',
       })
     } catch {
-      // ignore network errors
+      // ignore network errors on logout
     }
     setUser(null)
+    setMasterPassword(null)
   }
 
   if (!user) return <AuthPage onAuth={handleAuth} />
 
-  return <Dashboard user={user} onLogout={handleLogout} />
+  return <Dashboard user={user} masterPassword={masterPassword} onLogout={handleLogout} />
 }

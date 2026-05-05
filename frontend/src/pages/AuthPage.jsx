@@ -60,7 +60,7 @@ export default function AuthPage({ onAuth }) {
       return
     }
 
-    onAuth(data.user) // { email: ... }
+    onAuth(data.user, form.password)
   } catch (err) {
     setError('Network error. Is the backend running on port 5000?')
   } finally {

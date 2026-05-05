@@ -18,7 +18,9 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
 
   const generatePassword = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*'
-    const pw = Array.from({ length: 18 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+    const arr = new Uint32Array(18)
+    crypto.getRandomValues(arr)
+    const pw = Array.from(arr, (n) => chars[n % chars.length]).join('')
     setForm({ ...form, password: pw })
     setShowPass(true)
   }
@@ -68,7 +70,9 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
 
           {/* Password field */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Password</label>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">
+              Password{entry && <span className="normal-case text-zinc-600 ml-1">(leave blank to keep current)</span>}
+            </label>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <input
@@ -76,8 +80,8 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
                   name="password"
                   value={form.password}
                   onChange={handleChange}
-                  required
-                  placeholder="••••••••••••"
+                  required={!entry}
+                  placeholder={entry ? 'Leave blank to keep current' : '••••••••••••'}
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 pr-10 text-white text-sm font-mono
                     placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
                 />
