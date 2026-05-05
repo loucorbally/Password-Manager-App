@@ -1,10 +1,9 @@
-from flask import Flask, render_template, request, url_for, flash, jsonify
-from flask_cors import CORS
-from werkzeug.utils import redirect
-import sqlite3
 import os
+import secrets
+import sqlite3
 
-import base64
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -23,61 +22,43 @@ from flask_login import (
 db_file = "passwordData.db"
 
 app = Flask(__name__)
-app.secret_key = "change_this_to_a_random_secret"  # needed for flash/sessions
+
+# Use env var in production; generate a strong random key for dev so the
+# placeholder "change_this" secret can never accidentally reach production.
+app.secret_key = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
 
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=False,  # dev (HTTP)
+    SESSION_COOKIE_SECURE=False,  # set True when serving over HTTPS
 )
 
 CORS(
     app,
     supports_credentials=True,
-    origins=["http://127.0.0.1:5173"],
+    origins=["http://127.0.0.1:5173", "http://localhost:5173"],
 )
 
 bcrypt = Bcrypt(app)
 
 login_manager = LoginManager()
 login_manager.init_app(app)
-login_manager.login_view = "api_login"  # endpoint name (function name)
+login_manager.login_view = "api_login"
 
 @login_manager.unauthorized_handler
 def unauthorized():
     return jsonify({"error": "Unauthorized"}), 401
 
+
+# -----------------------
+# Database
+# -----------------------
 def get_db():
     conn = sqlite3.connect(db_file)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
-PBKDF2_ITERATIONS = 200_000  # reasonable baseline for a project
-
-def derive_kek(master_password: str, kdf_salt: bytes) -> bytes:
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=kdf_salt,
-        iterations=PBKDF2_ITERATIONS,
-    )
-    return kdf.derive(master_password.encode("utf-8"))
-
-def encrypt_with_aesgcm(key: bytes, plaintext: bytes) -> bytes:
-    aesgcm = AESGCM(key)
-    nonce = os.urandom(12)
-    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
-    return nonce + ciphertext
-
-def decrypt_with_aesgcm(key: bytes, blob: bytes) -> bytes:
-    nonce = blob[:12]
-    ciphertext = blob[12:]
-    aesgcm = AESGCM(key)
-    return aesgcm.decrypt(nonce, ciphertext, None)
-
-def generate_vault_key() -> bytes:
-    return os.urandom(32)
 
 def init_db():
     users_table = """
@@ -97,6 +78,8 @@ def init_db():
       user_id INTEGER NOT NULL,
       service TEXT NOT NULL,
       login TEXT NOT NULL,
+      url TEXT NOT NULL DEFAULT '',
+      category TEXT NOT NULL DEFAULT 'Personal',
       password_ciphertext BLOB NOT NULL,
       password_nonce BLOB NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -110,7 +93,6 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_credentials_service ON credentials(service);",
     ]
 
-
     conn = get_db()
     try:
         cur = conn.cursor()
@@ -122,12 +104,63 @@ def init_db():
     finally:
         conn.close()
 
+
+def migrate_db():
+    """Add columns introduced after the initial schema without breaking existing DBs."""
+    conn = get_db()
+    try:
+        for stmt in [
+            "ALTER TABLE credentials ADD COLUMN url TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE credentials ADD COLUMN category TEXT NOT NULL DEFAULT 'Personal'",
+        ]:
+            try:
+                conn.execute(stmt)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists
+    finally:
+        conn.close()
+
+
 # -----------------------
-# Flask-Login User model
+# Crypto helpers
+# -----------------------
+PBKDF2_ITERATIONS = 200_000
+
+def derive_kek(master_password: str, kdf_salt: bytes) -> bytes:
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=kdf_salt,
+        iterations=PBKDF2_ITERATIONS,
+    )
+    return kdf.derive(master_password.encode("utf-8"))
+
+
+def encrypt_with_aesgcm(key: bytes, plaintext: bytes) -> bytes:
+    aesgcm = AESGCM(key)
+    nonce = os.urandom(12)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+    return nonce + ciphertext
+
+
+def decrypt_with_aesgcm(key: bytes, blob: bytes) -> bytes:
+    nonce = blob[:12]
+    ciphertext = blob[12:]
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, ciphertext, None)
+
+
+def generate_vault_key() -> bytes:
+    return os.urandom(32)
+
+
+# -----------------------
+# Flask-Login user model
 # -----------------------
 class User(UserMixin):
     def __init__(self, user_id, username):
-        self.id = str(user_id)   # flask-login expects string IDs
+        self.id = str(user_id)
         self.username = username
 
 
@@ -136,8 +169,7 @@ def load_user(user_id):
     conn = get_db()
     try:
         row = conn.execute(
-            "SELECT id, username FROM users WHERE id = ?",
-            (user_id,),
+            "SELECT id, username FROM users WHERE id = ?", (user_id,)
         ).fetchone()
         if not row:
             return None
@@ -147,25 +179,46 @@ def load_user(user_id):
 
 
 # -----------------------
-# Helper: password rules
+# Password policy
 # -----------------------
 def is_strong_password(pw: str) -> bool:
-    if pw is None:
+    if not pw or len(pw) < 12:
         return False
-    if len(pw) < 12:
-        return False
-    has_lower = any(c.islower() for c in pw)
-    has_upper = any(c.isupper() for c in pw)
-    has_digit = any(c.isdigit() for c in pw)
-    has_symbol = any(not c.isalnum() for c in pw)
-    return has_lower and has_upper and has_digit and has_symbol
+    return (
+        any(c.islower() for c in pw)
+        and any(c.isupper() for c in pw)
+        and any(c.isdigit() for c in pw)
+        and any(not c.isalnum() for c in pw)
+    )
+
 
 # -----------------------
-# Routes
+# Vault key helper
+# -----------------------
+def get_user_vault_key(user_id: str, master_password: str) -> bytes:
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT kdf_salt, encrypted_vault_key, password_hash FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("User not found")
+        if not bcrypt.check_password_hash(row["password_hash"], master_password):
+            raise ValueError("Invalid master password")
+        kek = derive_kek(master_password, row["kdf_salt"])
+        return decrypt_with_aesgcm(kek, row["encrypted_vault_key"])
+    finally:
+        conn.close()
+
+
+# -----------------------
+# Routes — auth
 # -----------------------
 @app.route("/api/health")
 def api_health():
     return jsonify({"ok": True})
+
 
 @app.route("/api/register", methods=["POST"])
 def api_register():
@@ -201,9 +254,9 @@ def api_register():
     finally:
         conn.close()
 
-    # Optional: log them in immediately after registering
     login_user(User(user_id, username))
     return jsonify({"ok": True, "user": {"email": username}}), 201
+
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
@@ -226,11 +279,13 @@ def api_login():
     login_user(User(row["id"], row["username"]))
     return jsonify({"ok": True, "user": {"email": row["username"]}})
 
+
 @app.route("/api/logout", methods=["POST"])
 @login_required
 def api_logout():
     logout_user()
     return jsonify({"ok": True})
+
 
 @app.route("/api/me", methods=["GET"])
 def api_me():
@@ -238,44 +293,25 @@ def api_me():
         return jsonify({"user": None}), 200
     return jsonify({"user": {"email": current_user.username}}), 200
 
-def get_user_vault_key(user_id: str, master_password: str) -> bytes:
-    """
-    Decrypts and returns the user's vault key (DEK) given the master password.
-    Used when encrypting/decrypting credentials.
-    """
-    conn = get_db()
-    try:
-        row = conn.execute(
-            "SELECT kdf_salt, encrypted_vault_key, password_hash FROM users WHERE id = ?",
-            (user_id,),
-        ).fetchone()
-        if not row:
-            raise ValueError("User not found")
 
-        # verify password first (important)
-        if not bcrypt.check_password_hash(row["password_hash"], master_password):
-            raise ValueError("Invalid master password")
-
-        kek = derive_kek(master_password, row["kdf_salt"])
-        vault_key = decrypt_with_aesgcm(kek, row["encrypted_vault_key"])
-        return vault_key
-    finally:
-        conn.close()
-
+# -----------------------
+# Routes — credentials
+# -----------------------
 @app.route("/api/credentials", methods=["GET"])
 @login_required
 def api_list_credentials():
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT id, service, login, created_at, updated_at FROM credentials WHERE user_id = ? ORDER BY id DESC",
+            """SELECT id, service, login, url, category, created_at, updated_at
+               FROM credentials WHERE user_id = ? ORDER BY service ASC""",
             (current_user.id,),
         ).fetchall()
         creds = [dict(r) for r in rows]
     finally:
         conn.close()
-
     return jsonify({"items": creds})
+
 
 @app.route("/api/credentials", methods=["POST"])
 @login_required
@@ -285,14 +321,16 @@ def api_create_credential():
     login_ = (data.get("username") or data.get("login") or "").strip()
     password = data.get("password") or ""
     master_password = data.get("master_password") or ""
+    url = (data.get("url") or "").strip()
+    category = (data.get("category") or "Personal").strip()
 
     if not service or not login_ or not password:
-        return jsonify({"error": "service/site, login/username, and password are required."}), 400
+        return jsonify({"error": "site, username, and password are required."}), 400
 
     try:
         vault_key = get_user_vault_key(current_user.id, master_password)
-    except ValueError:
-        return jsonify({"error": "Master password is incorrect."}), 401
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
 
     aesgcm = AESGCM(vault_key)
     nonce = os.urandom(12)
@@ -301,19 +339,118 @@ def api_create_credential():
     conn = get_db()
     try:
         cur = conn.execute(
-            """
-            INSERT INTO credentials (user_id, service, login, password_ciphertext, password_nonce)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (current_user.id, service, login_, ciphertext, nonce),
+            """INSERT INTO credentials
+               (user_id, service, login, url, category, password_ciphertext, password_nonce)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (current_user.id, service, login_, url, category, ciphertext, nonce),
         )
         conn.commit()
         new_id = cur.lastrowid
     finally:
         conn.close()
 
-    return jsonify({"ok": True, "id": new_id}), 201
+    return jsonify({"ok": True, "id": new_id, "service": service, "login": login_,
+                    "url": url, "category": category}), 201
+
+
+@app.route("/api/credentials/<int:cred_id>", methods=["PUT"])
+@login_required
+def api_update_credential(cred_id):
+    data = request.get_json(force=True) or {}
+    service = (data.get("site") or data.get("service") or "").strip()
+    login_ = (data.get("username") or data.get("login") or "").strip()
+    url = (data.get("url") or "").strip()
+    category = (data.get("category") or "Personal").strip()
+    new_password = data.get("password") or ""
+    master_password = data.get("master_password") or ""
+
+    if not service or not login_:
+        return jsonify({"error": "site and username are required."}), 400
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM credentials WHERE id = ? AND user_id = ?",
+            (cred_id, current_user.id),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Not found."}), 404
+
+        if new_password:
+            try:
+                vault_key = get_user_vault_key(current_user.id, master_password)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 401
+
+            aesgcm = AESGCM(vault_key)
+            nonce = os.urandom(12)
+            ciphertext = aesgcm.encrypt(nonce, new_password.encode("utf-8"), None)
+            conn.execute(
+                """UPDATE credentials
+                   SET service=?, login=?, url=?, category=?,
+                       password_ciphertext=?, password_nonce=?, updated_at=datetime('now')
+                   WHERE id=? AND user_id=?""",
+                (service, login_, url, category, ciphertext, nonce, cred_id, current_user.id),
+            )
+        else:
+            conn.execute(
+                """UPDATE credentials
+                   SET service=?, login=?, url=?, category=?, updated_at=datetime('now')
+                   WHERE id=? AND user_id=?""",
+                (service, login_, url, category, cred_id, current_user.id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True})
+
+
+@app.route("/api/credentials/<int:cred_id>", methods=["DELETE"])
+@login_required
+def api_delete_credential(cred_id):
+    conn = get_db()
+    try:
+        result = conn.execute(
+            "DELETE FROM credentials WHERE id = ? AND user_id = ?",
+            (cred_id, current_user.id),
+        )
+        conn.commit()
+        if result.rowcount == 0:
+            return jsonify({"error": "Not found."}), 404
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/credentials/<int:cred_id>/reveal", methods=["POST"])
+@login_required
+def api_reveal_credential(cred_id):
+    data = request.get_json(force=True) or {}
+    master_password = data.get("master_password") or ""
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT password_ciphertext, password_nonce FROM credentials WHERE id = ? AND user_id = ?",
+            (cred_id, current_user.id),
+        ).fetchone()
+        if not row:
+            return jsonify({"error": "Not found."}), 404
+
+        try:
+            vault_key = get_user_vault_key(current_user.id, master_password)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 401
+
+        aesgcm = AESGCM(vault_key)
+        plaintext = aesgcm.decrypt(bytes(row["password_nonce"]), bytes(row["password_ciphertext"]), None)
+        return jsonify({"password": plaintext.decode("utf-8")})
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     init_db()
+    migrate_db()
     app.run(host="127.0.0.1", port=5000, debug=True)
