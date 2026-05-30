@@ -13,6 +13,8 @@ export default function Dashboard({ user, masterPassword, onLogout }) {
   const [modalOpen, setModalOpen] = useState(false)
   const [editEntry, setEditEntry] = useState(null)
   const [error, setError] = useState('')
+  const [security, setSecurity] = useState(null)
+  const [showSecurity, setShowSecurity] = useState(false)
 
   useEffect(() => {
     fetch(`${API}/api/credentials`, { credentials: 'include' })
@@ -112,6 +114,30 @@ export default function Dashboard({ user, masterPassword, onLogout }) {
     setModalOpen(true)
   }
 
+  const loadSecurityScore = async () => {
+    try {
+      const res = await fetch(
+        `${API}/api/security-score`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            master_password: masterPassword
+          })
+        }
+      )
+
+      const data = await res.json()
+      setSecurity(data)
+      setShowSecurity(true)
+    } catch {
+      setError('Failed to calculate security score.')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white" style={{ fontFamily: "'DM Sans', sans-serif" }}>
       <div className="fixed inset-0 bg-[linear-gradient(rgba(99,102,241,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(99,102,241,0.03)_1px,transparent_1px)] bg-[size:64px_64px] pointer-events-none" />
@@ -194,6 +220,13 @@ export default function Dashboard({ user, masterPassword, onLogout }) {
           </div>
 
           <button
+            onClick={loadSecurityScore}
+            className="bg-red-600 hover:bg-red-500 px-4 py-2 rounded-xl font-medium"
+          >
+            Security Health
+          </button>
+
+          <button
             onClick={() => { setEditEntry(null); setModalOpen(true) }}
             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold
               px-4 py-2.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
@@ -241,6 +274,43 @@ export default function Dashboard({ user, masterPassword, onLogout }) {
           onSave={handleSave}
           onClose={() => { setModalOpen(false); setEditEntry(null) }}
         />
+      )}
+
+      {showSecurity && security && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-zinc-900 rounded-2xl p-8 w-[500px]">
+            <h2 className="text-2xl font-bold mb-4">
+              Security Health Score
+            </h2>
+
+            <div className="text-6xl font-bold text-indigo-400 mb-2">
+              {security.score}
+            </div>
+
+            <p className="mb-6 text-zinc-300">
+              {security.rating}
+            </p>
+
+            <ul className="space-y-2 text-zinc-300 mb-6">
+              <li>
+                Weak Passwords: {security.weakPasswords}
+              </li>
+              <li>
+                Reused Passwords: {security.reusedPasswords}
+              </li>
+              <li>
+                Compromised Passwords: {security.compromisedPasswords}
+              </li>
+            </ul>
+
+            <button
+              onClick={() => setShowSecurity(false)}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-white font-medium"
+            >
+              Close
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
