@@ -1,6 +1,10 @@
 import os
 import secrets
 import sqlite3
+import re
+import hashlib
+import requests
+from collections import Counter
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -121,6 +125,147 @@ def migrate_db():
     finally:
         conn.close()
 
+# -----------------------
+# Security Health Scoring System
+# -----------------------
+
+#Password Scoring function for analysing strength of password
+def password_strength_score(password):
+    score = 0
+
+    if len(password) >= 12:
+        score += 25
+
+    if re.search(r"[A-Z]", password):
+        score += 25
+
+    if re.search(r"[a-z]", password):
+        score += 25
+
+    if re.search(r"\d", password):
+        score += 15
+
+    if re.search(r"[^A-Za-z0-9]", password):
+        score += 10
+
+    return score
+
+#Detecting compromised passwords here
+
+def is_pwned(password):
+    sha1 = hashlib.sha1(password.encode()).hexdigest().upper()
+
+    prefix = sha1[:5]
+    suffix = sha1[5:]
+
+    response = requests.get(
+        f"https://api.pwnedpasswords.com/range/{prefix}"
+    )
+
+    hashes = response.text.splitlines()
+
+    for line in hashes:
+        h, count = line.split(":")
+        if h == suffix:
+            return True
+
+    return False
+
+#Security Score Endpoint
+
+@app.route("/api/security-score", methods=["POST"])
+@login_required
+def api_security_score():
+    data = request.get_json(force=True) or {}
+    master_password = data.get("master_password", "")
+    try:
+        vault_key = get_user_vault_key(
+            current_user.id,
+            master_password
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 401
+
+    conn = get_db()
+    rows = conn.execute(
+        """
+        SELECT id,
+               service,
+               password_ciphertext,
+               password_nonce
+        FROM credentials
+        WHERE user_id = ?
+        """,
+        (current_user.id,)
+    ).fetchall()
+
+    aesgcm = AESGCM(vault_key)
+
+    passwords = []
+    weak_services = []
+
+    for row in rows:
+
+        plaintext = aesgcm.decrypt(
+            bytes(row["password_nonce"]),
+            bytes(row["password_ciphertext"]),
+            None
+        ).decode()
+
+        passwords.append(plaintext)
+
+        if password_strength_score(plaintext) < 70:
+            weak_services.append(row["service"])
+
+    from collections import Counter
+
+    counter = Counter(passwords)
+
+    reused_count = sum(
+        count - 1
+        for count in counter.values()
+        if count > 1
+    )
+
+    compromised_services = []
+
+    for row in rows:
+
+        plaintext = aesgcm.decrypt(
+            bytes(row["password_nonce"]),
+            bytes(row["password_ciphertext"]),
+            None
+        ).decode()
+
+        if is_pwned(plaintext):
+            compromised_services.append(row["service"])
+
+    score = 100
+
+    score -= len(weak_services) * 10
+    score -= reused_count * 10
+    score -= len(compromised_services) * 20
+
+    score = max(score, 0)
+
+    if score >= 90:
+        rating = "Excellent"
+    elif score >= 70:
+        rating = "Good"
+    elif score >= 50:
+        rating = "Fair"
+    else:
+        rating = "Poor"
+
+    return jsonify({
+        "score": score,
+        "rating": rating,
+        "weakPasswords": len(weak_services),
+        "reusedPasswords": reused_count,
+        "compromisedPasswords": len(compromised_services),
+        "weakServices": weak_services,
+        "compromisedServices": compromised_services
+    })
 
 # -----------------------
 # Crypto helpers
