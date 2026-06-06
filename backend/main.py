@@ -8,6 +8,7 @@ from collections import Counter
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask_mail import Mail, Message
 
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -36,6 +37,16 @@ app.config.update(
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=False,  # set True when serving over HTTPS
 )
+
+app.config['MAIL_SERVER'] = 'smtp-mail.outlook.com'
+app.config['MAIL_PORT'] = 587
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USERNAME'] = os.environ.get("MAIL_USERNAME")
+app.config['MAIL_PASSWORD'] = os.environ.get("MAIL_PASSWORD")
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get("MAIL_USERNAME") or os.environ.get("MAIL_DEFAULT_SENDER") or "noreply@capstonepwd.com"
+
+mail = Mail(app)
+app.config['MAIL_SUPPRESS_SEND'] = False
 
 CORS(
     app,
@@ -92,9 +103,21 @@ def init_db():
     );
     """
 
+    password_resets_table = """
+        CREATE TABLE IF NOT EXISTS password_resets (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          token TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          expires_at TEXT NOT NULL,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        """
+
     indexes = [
         "CREATE INDEX IF NOT EXISTS idx_credentials_user_id ON credentials(user_id);",
         "CREATE INDEX IF NOT EXISTS idx_credentials_service ON credentials(service);",
+        "CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token);",
     ]
 
     conn = get_db()
@@ -102,6 +125,7 @@ def init_db():
         cur = conn.cursor()
         cur.execute(users_table)
         cur.execute(credentials_table)
+        cur.execute(password_resets_table)
         for stmt in indexes:
             cur.execute(stmt)
         conn.commit()
@@ -121,7 +145,24 @@ def migrate_db():
                 conn.execute(stmt)
                 conn.commit()
             except sqlite3.OperationalError:
-                pass  # column already exists
+                pass  # if column already exists
+
+    #Creating a password_resets table here if it doesn't already exist
+        try:
+            conn.execute("""
+                        CREATE TABLE IF NOT EXISTS password_resets (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          user_id INTEGER NOT NULL,
+                          token TEXT NOT NULL UNIQUE,
+                          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                          expires_at TEXT NOT NULL,
+                          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        )
+                    """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token)")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # if table already exists
     finally:
         conn.close()
 
@@ -227,6 +268,27 @@ def api_security_score():
         if count > 1
     )
 
+    reused_services = []
+    password_to_services = {}
+
+    for row in rows:
+        plaintext = aesgcm.decrypt(
+            bytes(row["password_nonce"]),
+            bytes(row["password_ciphertext"]),
+            None
+        ).decode()
+
+        if plaintext not in password_to_services:
+            password_to_services[plaintext] = []
+        password_to_services[plaintext].append(row["service"])
+
+    # Collect services that share passwords with others and remove duplicates
+    for password, services in password_to_services.items():
+        if len(services) > 1:
+            reused_services.extend(services)
+
+    reused_services = list(dict.fromkeys(reused_services))
+
     compromised_services = []
 
     for row in rows:
@@ -264,6 +326,7 @@ def api_security_score():
         "reusedPasswords": reused_count,
         "compromisedPasswords": len(compromised_services),
         "weakServices": weak_services,
+        "reusedServices": reused_services,
         "compromisedServices": compromised_services
     })
 
@@ -438,6 +501,126 @@ def api_me():
         return jsonify({"user": None}), 200
     return jsonify({"user": {"email": current_user.username}}), 200
 
+
+@app.route("/api/password-reset-request", methods=["POST"])
+def api_password_reset_request():
+    data = request.get_json(force=True) or {}
+    email = (data.get("email") or "").strip()
+
+    if not email:
+        return jsonify({"error": "Email is required."}), 400
+
+    conn = get_db()
+    try:
+        row = conn.execute(
+            "SELECT id FROM users WHERE username = ?",
+            (email,)
+        ).fetchone()
+
+        if row:
+            # Generate secure reset token
+            reset_token = secrets.token_urlsafe(32)
+            user_id = row["id"]
+
+            # Calculate expiration time (24 hours from now)
+            conn.execute(
+                """INSERT INTO password_resets (user_id, token, expires_at)
+                   VALUES (?, ?, datetime('now', '+24 hours'))""",
+                (user_id, reset_token)
+            )
+            conn.commit()
+
+            # Send email directly (no app context)
+            try:
+                reset_link = f"http://127.0.0.1:5173/reset-password?token={reset_token}"
+                msg = Message(
+                    subject='Capstone Password - Reset Your Password',
+                    recipients=[email],
+                    body=f"""Hello,
+
+Click the link below to reset your password:
+{reset_link}
+
+If you did not request this password reset, please ignore this email.
+
+Best regards,
+Capstone Password Team""",
+                    html=f"""<html>
+<body style="font-family: Arial, sans-serif; color: #333;">
+    <h2 style="color: #4f46e5;">Capstone Password - Reset Your Password</h2>
+    <p>Hello,</p>
+    <p>We received a request to reset your Capstone Password vault master password.</p>
+    <p><a href="{reset_link}" style="background-color: #4f46e5; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Reset Your Password</a></p>
+    <p>Or copy this link: <code>{reset_link}</code></p>
+    <p style="color: #666; font-size: 12px;">This link will expire in 24 hours.</p>
+    <p style="color: #666; font-size: 12px;">If you did not request this password reset, please ignore this email.</p>
+    <p>Best regards,<br>Capstone Password Team</p>
+</body>
+</html>"""
+                )
+                mail.send(msg)
+                print(f"Password reset email sent to {email}")
+            except Exception as e:
+                print(f"Failed to send email to {email}: {e}")
+    finally:
+        conn.close()
+
+    # Always return success for security (don't reveal if email exists)
+    return jsonify({"ok": True, "message": "If this email exists, a reset link has been sent."}), 200
+
+
+@app.route("/api/password-reset", methods=["POST"])
+def api_password_reset():
+    data = request.get_json(force=True) or {}
+    reset_token = data.get("token") or ""
+    new_password = data.get("password") or ""
+    confirm = data.get("confirm") or new_password
+
+    if not reset_token or not new_password:
+        return jsonify({"error": "Token and password are required."}), 400
+
+    if new_password != confirm:
+        return jsonify({"error": "Passwords do not match."}), 400
+
+    if not is_strong_password(new_password):
+        return jsonify({"error": "Password must be 12+ chars and include upper/lower/digit/symbol."}), 400
+
+    conn = get_db()
+    try:
+        reset_row = conn.execute(
+            """SELECT user_id FROM password_resets 
+               WHERE token = ? AND expires_at > datetime('now')""",
+            (reset_token,)
+        ).fetchone()
+
+        if not reset_row:
+            return jsonify({"error": "Invalid or expired reset token."}), 401
+
+        user_id = reset_row["user_id"]
+
+        new_kdf_salt = os.urandom(16)
+        new_kek = derive_kek(new_password, new_kdf_salt)
+
+        vault_key = generate_vault_key()
+        new_encrypted_vault_key = encrypt_with_aesgcm(new_kek, vault_key)
+
+        new_password_hash = bcrypt.generate_password_hash(new_password).decode("utf-8")
+
+        conn.execute(
+            """UPDATE users 
+               SET password_hash = ?, kdf_salt = ?, encrypted_vault_key = ?
+               WHERE id = ?""",
+            (new_password_hash, new_kdf_salt, new_encrypted_vault_key, user_id)
+        )
+
+        conn.execute("DELETE FROM password_resets WHERE token = ?", (reset_token,))
+
+        conn.commit()
+
+        return jsonify({"ok": True, "message": "Password has been reset successfully."}), 200
+
+    finally:
+        conn.close()
 
 # -----------------------
 # Routes — credentials
