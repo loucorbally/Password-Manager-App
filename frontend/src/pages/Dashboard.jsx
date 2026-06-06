@@ -138,6 +138,36 @@ export default function Dashboard({ user, masterPassword, onLogout }) {
     }
   }
 
+  const getRecommendedServices = (data) => {
+    const recommended = [
+      {
+        type: 'weak',
+        icon: '⚠️',
+        color: 'yellow',
+        title: 'Weak Passwords',
+        services: data.weakServices || [],
+        message: 'These passwords are not strong enough. Consider creating stronger passwords.'
+      },
+      {
+        type: 'reused',
+        icon: '🔄',
+        color: 'orange',
+        title: 'Reused Passwords',
+        services: data.reusedServices || [],
+        message: 'These passwords are reused across multiple accounts. Use unique passwords for better security.'
+      },
+      {
+        type: 'compromised',
+        icon: '🚨',
+        color: 'red',
+        title: 'Compromised Passwords',
+        services: data.compromisedServices || [],
+        message: 'These passwords have appeared in known data breaches. Change them immediately.'
+      }
+    ]
+    return recommended.filter(item => item.services.length > 0)
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0f] text-white" style={{ fontFamily: "'DM Sans', sans-serif" }}>
       <div className="fixed inset-0 bg-[linear-gradient(rgba(99,102,241,0.03)_1px,transparent_1px),linear-gradient(90deg,rgba(99,102,241,0.03)_1px,transparent_1px)] bg-[size:64px_64px] pointer-events-none" />
@@ -277,31 +307,79 @@ export default function Dashboard({ user, masterPassword, onLogout }) {
       )}
 
       {showSecurity && security && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-zinc-900 rounded-2xl p-8 w-[500px]">
-            <h2 className="text-2xl font-bold mb-4">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-900 rounded-2xl p-8 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <h2 className="text-2xl font-bold mb-2 text-white">
               Security Health Score
             </h2>
+            <p className="text-zinc-400 text-sm mb-6">Review your password security and take action on flagged accounts.</p>
 
-            <div className="text-6xl font-bold text-indigo-400 mb-2">
-              {security.score}
+            <div className="mb-8 pb-8 border-b border-zinc-800">
+              <div className="text-6xl font-bold text-indigo-400 mb-2">
+                {security.score}
+              </div>
+              <p className="text-zinc-300 text-lg font-medium">
+                {security.rating} Security
+              </p>
             </div>
 
-            <p className="mb-6 text-zinc-300">
-              {security.rating}
-            </p>
+            {getRecommendedServices(security).length > 0 ? (
+              <div className="mb-8">
+                <h3 className="text-lg font-semibold mb-4 text-white">Recommended Actions</h3>
+                <div className="space-y-4">
+                  {getRecommendedServices(security).map((recommendation) => {
+                    const colorClasses = {
+                      yellow: 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400',
+                      orange: 'bg-orange-500/10 border-orange-500/30 text-orange-400',
+                      red: 'bg-red-500/10 border-red-500/30 text-red-400',
+                    }
+                    return (
+                      <div key={recommendation.type} className={`border rounded-lg p-4 ${colorClasses[recommendation.color]}`}>
+                        <div className="flex items-start gap-3">
+                          <span className="text-2xl mt-0.5">{recommendation.icon}</span>
+                          <div className="flex-1">
+                            <h4 className="font-semibold mb-1">{recommendation.title}</h4>
+                            <p className="text-sm opacity-90 mb-3">{recommendation.message}</p>
+                            <div className="bg-black/30 rounded p-3">
+                              <p className="text-xs font-medium opacity-75 mb-2">Services to update:</p>
+                              <ul className="space-y-1">
+                                {recommendation.services.map((service, idx) => (
+                                  <li key={idx} className="text-sm flex items-center gap-2">
+                                    <span>•</span>
+                                    <span className="font-medium">{service}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="mb-8 bg-green-500/10 border border-green-500/30 rounded-lg p-4">
+                <p className="text-green-400 font-medium">✓ All your passwords look good!</p>
+                <p className="text-green-400/80 text-sm mt-1">Keep maintaining strong security practices.</p>
+              </div>
+            )}
 
-            <ul className="space-y-2 text-zinc-300 mb-6">
-              <li>
-                Weak Passwords: {security.weakPasswords}
-              </li>
-              <li>
-                Reused Passwords: {security.reusedPasswords}
-              </li>
-              <li>
-                Compromised Passwords: {security.compromisedPasswords}
-              </li>
-            </ul>
+            {/* Summary Stats */}
+            <div className="grid grid-cols-3 gap-3 mb-6 pb-6 border-b border-zinc-800">
+              <div className="bg-zinc-800/50 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold">{security.weakPasswords}</p>
+                <p className="text-xs text-zinc-400">Weak Passwords</p>
+              </div>
+              <div className="bg-zinc-800/50 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold">{security.reusedPasswords}</p>
+                <p className="text-xs text-zinc-400">Reused</p>
+              </div>
+              <div className="bg-zinc-800/50 rounded-lg p-3 text-center">
+                <p className="text-2xl font-bold">{security.compromisedPasswords}</p>
+                <p className="text-xs text-zinc-400">Compromised</p>
+              </div>
+            </div>
 
             <button
               onClick={() => setShowSecurity(false)}
