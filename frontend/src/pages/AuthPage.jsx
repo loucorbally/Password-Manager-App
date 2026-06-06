@@ -5,6 +5,11 @@ export default function AuthPage({ onAuth }) {
   const [form, setForm] = useState({ email: '', password: '', confirm: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [showResetModal, setShowResetModal] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetLoading, setResetLoading] = useState(false)
+  const [resetMessage, setResetMessage] = useState('')
+  const [resetError, setResetError] = useState('')
 
   const handleChange = (e) => {
     setForm({ ...form, [e.target.name]: e.target.value })
@@ -67,6 +72,40 @@ export default function AuthPage({ onAuth }) {
     setLoading(false)
   }
 }
+
+  const handlePasswordReset = async (e) => {
+      e.preventDefault()
+      setResetError('')
+      setResetMessage('')
+
+      if (!resetEmail) {
+        setResetError('Email is required.')
+        return
+      }
+
+      setResetLoading(true)
+      try {
+        const res = await fetch('http://127.0.0.1:5000/api/password-reset-request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: resetEmail }),
+        })
+
+        const data = await res.json()
+
+        if (!res.ok) {
+          setResetError(data?.error || 'Failed to request password reset.')
+          return
+        }
+
+        setResetMessage('A reset link has been sent. Please check your inbox for instructions.')
+        setResetEmail('')
+      } catch (err) {
+        setResetError('Network error.')
+      } finally {
+        setResetLoading(false)
+      }
+    }
 
   return (
     <div className="min-h-screen bg-[#0a0a0f] flex items-center justify-center px-4">
@@ -196,6 +235,19 @@ export default function AuthPage({ onAuth }) {
             </button>
           </form>
 
+          {/* Forgot Password Link (only show on login mode) */}
+          {mode === 'login' && (
+            <div className="text-center mt-4">
+              <button
+                type="button"
+                onClick={() => setShowResetModal(true)}
+                className="text-indigo-400 hover:text-indigo-300 text-sm transition-colors"
+              >
+                Forgot your password?
+              </button>
+            </div>
+          )}
+
           {mode === 'login' && (
             <p className="text-center text-zinc-600 text-xs mt-6">
               Your vault is end-to-end encrypted. We never see your passwords.
@@ -203,6 +255,72 @@ export default function AuthPage({ onAuth }) {
           )}
         </div>
       </div>
+
+      {/* Password Reset Modal */}
+      {showResetModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-900 rounded-2xl p-8 w-full max-w-md border border-zinc-800">
+            <h2 className="text-2xl font-bold mb-2 text-white">Reset Password</h2>
+            <p className="text-zinc-400 text-sm mb-6">Enter your email address and we'll send you a reset link.</p>
+
+            <form onSubmit={handlePasswordReset} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  placeholder="you@example.com"
+                  className="w-full bg-zinc-800/80 border border-zinc-700 rounded-xl px-4 py-3 text-white text-sm placeholder-zinc-600
+                    focus:outline-none focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500/50 transition-all"
+                />
+              </div>
+
+              {resetError && (
+                <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+                  <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-red-400 text-sm">{resetError}</p>
+                </div>
+              )}
+
+              {resetMessage && (
+                <div className="flex items-center gap-2 bg-green-500/10 border border-green-500/20 rounded-xl px-4 py-3">
+                  <svg className="w-4 h-4 text-green-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <p className="text-green-400 text-sm">{resetMessage}</p>
+                </div>
+              )}
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowResetModal(false)
+                    setResetEmail('')
+                    setResetMessage('')
+                    setResetError('')
+                  }}
+                  className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-semibold py-2 rounded-xl transition-all"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={resetLoading}
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-semibold py-2 rounded-xl transition-all"
+                >
+                  {resetLoading ? 'Sending...' : 'Send Reset Link'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
