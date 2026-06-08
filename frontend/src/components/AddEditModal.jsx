@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { analysePassword } from '../utils/passwordStrength'
+import PasswordStrengthIndicator from './PasswordStrengthIndicator'
 
 export default function AddEditModal({ entry, categories, onSave, onClose }) {
   const [form, setForm] = useState({
@@ -9,35 +11,50 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
     category: categories[0],
   })
   const [showPass, setShowPass] = useState(false)
+  const [analysis, setAnalysis] = useState({ tier: null, score: 0, entropy: 0, checks: [], tips: [] })
 
   useEffect(() => {
-    if (entry) setForm(entry)
+    if (entry) {
+      setForm(entry)
+      setAnalysis(analysePassword(entry.password))
+    }
   }, [entry])
 
-  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value })
+  const handleChange = (e) => {
+    const updated = { ...form, [e.target.name]: e.target.value }
+    setForm(updated)
+    // Re-analyse whenever the password field changes
+    if (e.target.name === 'password') {
+      setAnalysis(analysePassword(e.target.value))
+    }
+  }
 
   const generatePassword = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*'
-    const arr = new Uint32Array(18)
-    crypto.getRandomValues(arr)
-    const pw = Array.from(arr, (n) => chars[n % chars.length]).join('')
+    const pw = Array.from({ length: 18 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
     setForm({ ...form, password: pw })
+    setAnalysis(analysePassword(pw))
     setShowPass(true)
   }
 
   const handleSubmit = (e) => {
     e.preventDefault()
+    // Block saving if password is weak
+    if (analysis.tier === 'weak') return
     onSave(form)
   }
+
+  const canSave = analysis.tier !== 'weak' && form.site && form.username && form.password
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
 
-      {/* Modal */}
-      <div className="relative bg-zinc-900 border border-zinc-800 rounded-2xl p-6 w-full max-w-md shadow-2xl"
+      {/* Modal — taller to fit the analyser */}
+      <div className="relative bg-zinc-900 border border-zinc-800 rounded-2xl p-6 w-full max-w-md shadow-2xl max-h-[90vh] overflow-y-auto"
         style={{ fontFamily: "'DM Sans', sans-serif" }}>
+
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-white font-bold text-lg">{entry ? 'Edit Password' : 'Add Password'}</h2>
           <button onClick={onClose} className="text-zinc-500 hover:text-white transition-colors">
@@ -48,6 +65,7 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Site, username, url fields */}
           {[
             { label: 'Site Name', name: 'site', type: 'text', placeholder: 'e.g. GitHub' },
             { label: 'Username / Email', name: 'username', type: 'text', placeholder: 'you@example.com' },
@@ -70,9 +88,7 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
 
           {/* Password field */}
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">
-              Password{entry && <span className="normal-case text-zinc-600 ml-1">(leave blank to keep current)</span>}
-            </label>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Password</label>
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <input
@@ -80,8 +96,8 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
                   name="password"
                   value={form.password}
                   onChange={handleChange}
-                  required={!entry}
-                  placeholder={entry ? 'Leave blank to keep current' : '••••••••••••'}
+                  required
+                  placeholder="••••••••••••"
                   className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 pr-10 text-white text-sm font-mono
                     placeholder-zinc-600 focus:outline-none focus:ring-2 focus:ring-indigo-500/40 transition-all"
                 />
@@ -95,6 +111,7 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
                   </svg>
                 </button>
               </div>
+              {/* Generate button */}
               <button
                 type="button"
                 onClick={generatePassword}
@@ -108,6 +125,11 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
               </button>
             </div>
           </div>
+
+          {/* Password strength analyser — shows as soon as user starts typing */}
+          {form.password.length > 0 && (
+            <PasswordStrengthIndicator analysis={analysis} />
+          )}
 
           {/* Category */}
           <div>
@@ -123,13 +145,27 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
             </select>
           </div>
 
+          {/* Weak password warning */}
+          {analysis.tier === 'weak' && form.password.length > 0 && (
+            <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
+              <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-red-400 text-xs">Password is too weak to save. Please strengthen it or use the generator.</p>
+            </div>
+          )}
+
           <div className="flex gap-3 pt-2">
             <button type="button" onClick={onClose}
               className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium py-2.5 rounded-xl transition-all">
               Cancel
             </button>
-            <button type="submit"
-              className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-2.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20">
+            <button
+              type="submit"
+              disabled={!canSave}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed
+                text-white font-semibold py-2.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20"
+            >
               {entry ? 'Save Changes' : 'Add Password'}
             </button>
           </div>
@@ -138,4 +174,3 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
     </div>
   )
 }
-
