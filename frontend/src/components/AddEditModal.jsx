@@ -15,7 +15,13 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
 
   useEffect(() => {
     if (entry) {
-      setForm(entry)
+      setForm({
+        site: entry.site || '',
+        username: entry.username || '',
+        password: entry.password || '',
+        url: entry.url || '',
+        category: entry.category || categories[0] || '',
+        })
       setAnalysis(analysePassword(entry.password))
     }
   }, [entry])
