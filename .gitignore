@@ -153,4 +153,4 @@ __pycache__/
 
 #
 .DS_Store
-**/.DS_Store
+**/.DS_Storebackend/passwordData.db
