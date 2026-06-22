@@ -13,12 +13,15 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
   const [showPass, setShowPass] = useState(false)
   const [analysis, setAnalysis] = useState({ tier: null, score: 0, entropy: 0, checks: [], tips: [] })
 
-  useEffect(() => {
-    if (entry) {
-      setForm(entry)
+ useEffect(() => {
+  if (entry) {
+    setForm(entry)
+    // Only analyse if it's a real password, not the placeholder
+    if (entry.password && !entry.password.includes('•')) {
       setAnalysis(analysePassword(entry.password))
     }
-  }, [entry])
+  }
+}, [entry])
 
   const handleChange = (e) => {
     const updated = { ...form, [e.target.name]: e.target.value }
@@ -127,10 +130,9 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
           </div>
 
           {/* Password strength analyser — shows as soon as user starts typing */}
-          {form.password.length > 0 && (
-            <PasswordStrengthIndicator analysis={analysis} />
-          )}
-
+         {form.password && form.password.length > 0 && !form.password.includes('•') && (
+  <PasswordStrengthIndicator analysis={analysis} />
+)}
           {/* Category */}
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Category</label>
@@ -146,7 +148,7 @@ export default function AddEditModal({ entry, categories, onSave, onClose }) {
           </div>
 
           {/* Weak password warning */}
-          {analysis.tier === 'weak' && form.password.length > 0 && (
+          {analysis.tier === 'weak' && form.password && form.password.length > 0 && (
             <div className="flex items-center gap-2 bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3">
               <svg className="w-4 h-4 text-red-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
